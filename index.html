@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>In-Browser Video Compressor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="bg-gray-900 text-gray-100 min-h-screen flex flex-col items-center justify-center p-6">
+
+  <div class="max-w-xl w-full bg-gray-800 rounded-xl shadow-2xl p-8 border border-gray-700">
+    <h1 class="text-3xl font-bold text-center mb-2 text-indigo-400">⚡ Client-Side Video Compressor</h1>
+    <p class="text-gray-400 text-sm text-center mb-8">100% private. Your videos never leave your device.</p>
+
+    <div id="upload-zone" class="border-2 border-dashed border-gray-600 rounded-lg p-8 text-center cursor-pointer hover:border-indigo-500 transition">
+      <input type="file" id="video-input" accept="video/*" class="hidden">
+      <svg class="mx-auto h-12 w-12 text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+      </svg>
+      <p class="text-lg font-medium" id="upload-text">Click or drag video here to start</p>
+    </div>
+
+    <div id="compression-controls" class="hidden mt-6 space-y-4">
+      <div class="bg-gray-700 p-4 rounded-lg">
+        <p class="text-sm text-gray-300 font-semibold mb-2">Selected File:</p>
+        <p id="file-info" class="text-xs text-gray-400 truncate"></p>
+      </div>
+
+      <div>
+        <label for="crf-slider" class="block text-sm font-medium text-gray-300 mb-1">Compression Level (CRF):</label>
+        <input type="range" id="crf-slider" min="18" max="35" value="28" class="w-full h-2 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500">
+        <div class="flex justify-between text-xs text-gray-400 mt-1">
+          <span>High Quality (Larger File)</span>
+          <span id="crf-value" class="font-bold text-indigo-400">CRF: 28</span>
+          <span>Low Quality (Smaller File)</span>
+        </div>
+      </div>
+
+      <button id="compress-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition disabled:opacity-50">
+        Compress Video
+      </button>
+    </div>
+
+    <div id="status-zone" class="hidden mt-6 space-y-2">
+      <div class="flex justify-between text-sm mb-1">
+        <span id="status-text" class="text-indigo-300 animate-pulse">Loading FFmpeg...</span>
+        <span id="progress-percentage" class="font-bold">0%</span>
+      </div>
+      <div class="w-full bg-gray-700 rounded-full h-2.5">
+        <div id="progress-bar" class="bg-indigo-500 h-2.5 rounded-full" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <div id="download-zone" class="hidden mt-6 text-center">
+      <div class="bg-green-900/30 border border-green-500/50 p-4 rounded-lg mb-4">
+        <p class="text-green-400 font-medium">Compression Complete!</p>
+        <p id="size-comparison" class="text-xs text-gray-300 mt-1"></p>
+      </div>
+      <a id="download-link" download="compressed_video.mp4" class="inline-block w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition">
+        Download Compressed Video
+      </a>
+    </div>
+  </div>
+
+  <script type="module">
+    import {
+      FFmpeg
+    } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.10/dist/esm/index.js';
+    import {
+      fetchFile
+    } from 'https://unpkg.com/@ffmpeg/util@0.12.1/dist/esm/index.js';
+    const ffmpeg = new FFmpeg();
+    let selectedFile = null;
+    // DOM Elements
+    const uploadZone = document.getElementById('upload-zone');
+    const videoInput = document.getElementById('video-input');
+    const uploadText = document.getElementById('upload-text');
+    const compressionControls = document.getElementById('compression-controls');
+    const fileInfo = document.getElementById('file-info');
+    const crfSlider = document.getElementById('crf-slider');
+    const crfValue = document.getElementById('crf-value');
+    const compressBtn = document.getElementById('compress-btn');
+    const statusZone = document.getElementById('status-zone');
+    const statusText = document.getElementById('status-text');
+    const progressBar = document.getElementById('progress-bar');
+    const progressPercentage = document.getElementById('progress-percentage');
+    const downloadZone = document.getElementById('download-zone');
+    const downloadLink = document.getElementById('download-link');
+    const sizeComparison = document.getElementById('size-comparison');
+    // Trigger file input click
+    uploadZone.addEventListener('click', () => videoInput.click());
+    // Handle File Selection
+    videoInput.addEventListener('change', (e) => {
+      selectedFile = e.target.files[0];
+      if (!selectedFile) return;
+      fileInfo.textContent = `${selectedFile.name} (${(selectedFile.size / (1024 * 1024)).toFixed(2)} MB)`;
+      compressionControls.classList.remove('hidden');
+      downloadZone.classList.add('hidden');
+    });
+    // Update CRF UI
+    crfSlider.addEventListener('input', (e) => {
+      crfValue.textContent = `CRF: ${e.target.value}`;
+    });
+    // Main Compression Logic
+    compressBtn.addEventListener('click', async () => {
+      if (!selectedFile) return;
+      // UI Setup
+      compressBtn.disabled = true;
+      statusZone.classList.remove('hidden');
+      downloadZone.classList.add('hidden');
+      try {
+        // 1. Initialize FFmpeg if not loaded
+        if (!ffmpeg.loaded) {
+          statusText.textContent = "Loading WebAssembly core...";
+          await ffmpeg.load({
+            coreURL: 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm/ffmpeg-core.js'
+          });
+        }
+        // 2. Setup Progress Tracking
+        ffmpeg.on('progress', ({
+          progress
+        }) => {
+          const percent = Math.round(progress * 100);
+          progressBar.style.width = `${percent}%`;
+          progressPercentage.textContent = `${percent}%`;
+        });
+        statusText.textContent = "Processing video file...";
+        // Write the file to FFmpeg's virtual filesystem
+        await ffmpeg.writeFile('input.mp4', await fetchFile(selectedFile));
+        statusText.textContent = "Compressing... (This may take a minute)";
+        const crf = crfSlider.value;
+        // Run FFmpeg command: Using libx264 with AAC audio encoding
+        // CRF (Constant Rate Factor): Lower is better quality, higher is more compression
+        await ffmpeg.exec([
+          '-i', 'input.mp4',
+          '-vcodec', 'libx264',
+          '-crf', crf,
+          '-preset', 'fast',
+          '-acodec', 'aac',
+          'output.mp4'
+        ]);
+        // 3. Read compressed file back
+        statusText.textContent = "Finalizing...";
+        const data = await ffmpeg.readFile('output.mp4');
+        // Create download link
+        const compressedBlob = new Blob([data.buffer], {
+          type: 'video/mp4'
+        });
+        const url = URL.createObjectURL(compressedBlob);
+        downloadLink.href = url;
+        // Display file sizes
+        const oldSize = (selectedFile.size / (1024 * 1024)).toFixed(2);
+        const newSize = (compressedBlob.size / (1024 * 1024)).toFixed(2);
+        sizeComparison.textContent = `Original: ${oldSize} MB ➔ Compressed: ${newSize} MB`;
+        // Show completion
+        statusZone.classList.add('hidden');
+        downloadZone.classList.remove('hidden');
+      } catch (error) {
+        console.error(error);
+        statusText.textContent = "Error during compression.";
+      } finally {
+        compressBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+
+</html>
